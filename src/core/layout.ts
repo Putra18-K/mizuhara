@@ -21,6 +21,7 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
+  | "sessions"
   | "greeting";
 
 export type BotStateName =
@@ -48,10 +49,14 @@ export interface ViewLayout {
   agentMode: AgentLayoutMode;
 }
 
-// The window is a fixed 720×320 (largest view) like the macOS panel; the island is
-// drawn inside it, glued to the top edge and horizontally centred.
-export const PANEL_W = 720;
-export const PANEL_H = 320;
+// The window is a fixed 640×520 transparent stage at the right edge of the screen,
+// vertically centred. It stays 640 wide so the launch greeting and the file-drop
+// choreography (both drawn on a 640-wide canvas) still fit; the *visible* island
+// for normal views is the narrow portrait column below.
+export const PANEL_W = 640;
+export const PANEL_H = 420;
+/** Width of the visible island for normal (portrait) views. */
+export const ISLAND_W = 288;
 
 // No notch on a PC: these are the hidden/compact sizes from docs/SPEC.md.
 export const NOTCH_W = 184;
@@ -59,32 +64,41 @@ export const NOTCH_H = 32;
 export const COMPACT_W = 288; // NOTCH_W + 104
 export const EXPANDED_W = 640;
 
+/** Views still drawn on the wide 640 canvas: the greeting and the file drop. */
+export const WIDE_VIEWS: ReadonlySet<IslandViewName> = new Set([
+  "greeting", "upload", "uploading", "choose",
+]);
+
 export const ROUNDED_CORNER = 14; // hidden / compact
 export const EXPANDED_CORNER = 22;
 
-/** Invisible hover strip that wakes the island when hidden. */
-export const WAKE_STRIP_W = 240;
-export const WAKE_STRIP_H = 6;
+/** The small vertical bar the island rests as when idle, at the right edge.
+ *  Hovering or clicking it opens the panel. Must match STRIP_W/STRIP_H in
+ *  src-tauri/src/island.rs. */
+export const WAKE_STRIP_W = 10;
+export const WAKE_STRIP_H = 88;
 
 export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
-  overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
-  empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
-  approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  question: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
-  finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
-  confused: { height: 160, botX: 76, botY: null, botDiameter: 66, agentMode: "column" },
+  // Portrait column: the character sits top-left beside the name (overview) or
+  // vertically centred next to the text (the card views).
+  overview: { height: 300, botX: 36, botY: 68, botDiameter: 36, agentMode: "column" },
+  empty: { height: 170, botX: 36, botY: null, botDiameter: 38, agentMode: "none" },
+  approval: { height: 180, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  question: { height: 170, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  error: { height: 170, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  finished: { height: 200, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  confused: { height: 160, botX: 44, botY: null, botDiameter: 40, agentMode: "column" },
   upload: { height: 176, botX: 140, botY: 104, botDiameter: 62, agentMode: "column" },
-  // botY 103 = bar top (42 + 58) + 3, so the dot really rides the bar. The Swift
-  // layout says 118 while its own comment says 103; the comment matches the spec.
+  // botY 103 = bar top (42 + 58) + 3, so the dot really rides the bar.
   uploading: { height: 176, botX: 46, botY: 103, botDiameter: 20, agentMode: "none" },
   choose: { height: 176, botX: 60, botY: 101, botDiameter: 52, agentMode: "column" },
-  mail: { height: 240, botX: 56, botY: null, botDiameter: 46, agentMode: "column" },
-  prompt: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
-  searching: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
-  result: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
-  note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
-  settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
+  mail: { height: 200, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  prompt: { height: 260, botX: 36, botY: null, botDiameter: 34, agentMode: "column" },
+  searching: { height: 170, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  result: { height: 200, botX: 36, botY: null, botDiameter: 36, agentMode: "column" },
+  note: { height: 170, botX: 36, botY: null, botDiameter: 38, agentMode: "column" },
+  settings: { height: 240, botX: 36, botY: 68, botDiameter: 36, agentMode: "none" },
+  sessions: { height: 260, botX: 36, botY: 68, botDiameter: 36, agentMode: "column" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
@@ -94,8 +108,11 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
 
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
-  return Math.min(300, 240 + messageCount * 40);
+  return Math.min(360, 260 + messageCount * 40);
 }
+
+/** Overview height when there is nothing to list under the focused card. */
+export const OVERVIEW_SOLO_H = 190;
 
 export function islandSize(
   mode: IslandMode,
@@ -110,8 +127,11 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
+      // Portrait column for normal views; only the greeting and the file drop
+      // keep the wide 640 canvas.
+      const w = WIDE_VIEWS.has(view) ? EXPANDED_W : ISLAND_W;
       const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
-      return { w: EXPANDED_W, h };
+      return { w, h };
     }
   }
 }

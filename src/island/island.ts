@@ -4,8 +4,9 @@
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
-  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
-  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, OVERVIEW_SOLO_H, PANEL_H, PANEL_W,
+  ROUNDED_CORNER, VIEW_LAYOUTS, WAKE_STRIP_H, WAKE_STRIP_W,
+  botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -65,6 +66,8 @@ export class Island {
   private lastFrame = 0;
   private dirty = true;
   private canvasPx = 0;
+  /** Last target size handed to the springs, so syncSize only reacts to changes. */
+  private sizeKey = "";
 
   // Rust starts the window at full size so the launch greeting has room.
   private collapsed = false;
@@ -160,8 +163,9 @@ export class Island {
         State.notify();
       },
       setAutoClose: (s) => {
+        // The island now closes as soon as the cursor leaves; this setting is kept
+        // only so older settings files still round-trip.
         State.settings.autoCloseInterval = s;
-        this.fsm.homeToPetitDelay = s;
         void Bridge.saveSettings(State.settings);
         State.notify();
       },
@@ -224,7 +228,6 @@ export class Island {
   // ── FSM ─────────────────────────────────────────────────────────────────────
 
   private wireFsm() {
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.onTransition = (from, to) => {
       switch (to) {
         case "hidden":
@@ -235,11 +238,9 @@ export class Island {
           else if (from === "hidden") Sound.play("peek");
           this.setMode("compact");
           if (from === "mizuhara") State.view = State.defaultView();
-          if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
           this.expand(State.defaultView());
-          if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "mizuhara":
           this.expand("greeting");
@@ -330,9 +331,8 @@ export class Island {
     this.expand(view);
   }
 
-  reveal() {
-    this.fsm.reveal();
-  }
+  /** Work events merely update the pills and badge; the island opens on hover. */
+  reveal() {}
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
@@ -452,11 +452,14 @@ export class Island {
   private targetSize(): { w: number; h: number; r: number } {
     const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
-    return { w, h, r };
+    // With no other agents to list under the card, the overview is shorter.
+    const hh = State.view === "overview" && State.otherTasks.length === 0 ? OVERVIEW_SOLO_H : h;
+    return { w, h: hh, r };
   }
 
   private animateGeometry(shrinking: boolean) {
     const { w, h, r } = this.targetSize();
+    this.sizeKey = `${w}x${h}x${r}`;
     if (shrinking) {
       this.width.curveTowards(w);
       this.height.curveTowards(h);
@@ -469,14 +472,32 @@ export class Island {
     this.ensureRunning();
   }
 
+  /**
+   * The overview grows a little when there is a second card to list, so its
+   * target height depends on the agent list. That list can change while the
+   * island sits still (a new agent appears, a session is dropped), and nothing
+   * else re-measures then — the card below used to be cut off against the old
+   * height until some unrelated event happened to resize the island.
+   */
+  private syncSize() {
+    const { w, h, r } = this.targetSize();
+    if (`${w}x${h}x${r}` === this.sizeKey) return;
+    const shrinking = w < this.width.value - 0.5 || h < this.height.value - 0.5;
+    this.animateGeometry(shrinking);
+  }
+
   private applyGeometry() {
     const w = this.width.value;
     const hh = this.height.value;
     const r = this.radius.value;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
+    // Right-aligned and vertically centred in the stage: the island lives at the
+    // right edge of the screen, not under the top edge.
+    this.islandEl.style.left = `${PANEL_W - w}px`;
+    this.islandEl.style.top = `${(PANEL_H - hh) / 2}px`;
+    this.islandEl.style.borderRadius = `${r}px`;
+    this.islandEl.style.transform = "none";
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
@@ -484,7 +505,11 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    // Hidden: the window is only the wake tab, so the click-through test must be
+    // the tab's rect — otherwise the tab can never be reached to wake the island.
+    const rect = hh < 1
+      ? { x: 0, y: 0, w: WAKE_STRIP_W, h: WAKE_STRIP_H }
+      : { x: PANEL_W - w, y: (PANEL_H - hh) / 2, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -492,11 +517,13 @@ export class Island {
     }
   }
 
-  /** Island rect in window coordinates (origin top-left of the 720×320 window). */
+  /** Island rect in window coordinates — must match applyGeometry exactly. */
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    // Hidden: the window is only the little idle bar, so the rect is that bar.
+    if (hh < 1) return { x: 0, y: 0, w: WAKE_STRIP_W, h: WAKE_STRIP_H };
+    return { x: PANEL_W - w, y: (PANEL_H - hh) / 2, w, h: hh };
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
@@ -512,14 +539,26 @@ export class Island {
       this.collapseTimer = window.setTimeout(() => {
         this.collapseTimer = null;
         if (State.mode !== "hidden") return;
-        this.collapsed = true;
+        this.setWindowCollapsed(true);
         void Bridge.setCollapsed(true);
       }, 420);
     } else if (this.collapsed) {
       // Grow the window back before the island animates open.
-      this.collapsed = false;
+      this.setWindowCollapsed(false);
       void Bridge.setCollapsed(false);
     }
+  }
+
+  /**
+   * The wake strip is the whole window while collapsed, but the window is a
+   * full 640×420 stage the rest of the time. Left visible there, its opaque
+   * background and centre bar painted a dark rectangle across the desktop and a
+   * stray tick over the panel, so it is only shown once the window really is the
+   * strip.
+   */
+  private setWindowCollapsed(collapsed: boolean) {
+    this.collapsed = collapsed;
+    this.wakeStrip.classList.toggle("on", collapsed);
   }
 
   // ── Input ───────────────────────────────────────────────────────────────────
@@ -529,6 +568,12 @@ export class Island {
     this.wakeStrip.addEventListener("mouseenter", () => {
       Sound.resume();
       if (State.mode === "hidden") this.fsm.mouseEntered();
+    });
+
+    // Clicking the idle bar opens it too, not just hovering.
+    this.wakeStrip.addEventListener("mousedown", () => {
+      Sound.resume();
+      this.fsm.click();
     });
 
     this.islandEl.addEventListener("mousedown", (e) => {
@@ -588,13 +633,11 @@ export class Island {
     if (inIsland && !this.wasInIsland) {
       if (this.fsm.state === "mizuhara") this.greeting.hover();
       this.fsm.mouseEntered();
-      this.homeCollapseAt = null;
     }
-    if (!inIsland && this.wasInIsland) {
+    if (!inIsland && this.fsm.state === "home") {
+      // Covers both "the cursor just left" and "an event opened the island while
+      // the cursor was elsewhere": with the cursor off the island, it closes.
       this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
-        this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
-      }
     }
     this.wasInIsland = inIsland;
 
@@ -833,6 +876,7 @@ export class Island {
   // ── DOM sync ────────────────────────────────────────────────────────────────
 
   private syncDom() {
+    this.syncSize();
     const expanded = State.mode === "expanded";
     const greetingActive = expanded && State.view === "greeting";
 
@@ -884,7 +928,6 @@ export class Island {
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
-    this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     State.notify();
   }
 

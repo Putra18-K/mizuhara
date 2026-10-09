@@ -1,9 +1,9 @@
 // Island window: placement on the chosen display, the two window sizes
 // (full panel / invisible wake strip), click-through and the cursor poll.
 //
-// There is no notch on a PC, so the island is a black shape drawn at the top
-// centre of the main display inside a borderless, transparent, always-on-top
-// window that never takes focus.
+// There is no notch on a PC, so the island is a black shape drawn at the right
+// edge of the display, vertically centred, inside a borderless, transparent,
+// always-on-top window that never takes focus.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -14,12 +14,18 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize
 
 use crate::platform::{self, cursor_physical, left_button_down};
 
-/// Logical size of the full window — the largest island view, like the macOS panel.
-pub const PANEL_W: f64 = 720.0;
-pub const PANEL_H: f64 = 320.0;
-/// Logical size of the invisible strip that wakes the island when it is hidden.
-pub const STRIP_W: f64 = 240.0;
-pub const STRIP_H: f64 = 6.0;
+/// Logical size of the transparent window — wide enough to host the 640-wide
+/// greeting and file-drop canvases, tall enough for the portrait column.
+/// Must match PANEL_W/PANEL_H in src/core/layout.ts.
+pub const PANEL_W: f64 = 640.0;
+pub const PANEL_H: f64 = 420.0;
+/// The small vertical bar the island rests as when idle, at the right edge.
+/// Hovering or clicking it opens the panel.
+/// Must match WAKE_STRIP_W/WAKE_STRIP_H in src/core/layout.ts.
+pub const STRIP_W: f64 = 10.0;
+pub const STRIP_H: f64 = 88.0;
+/// Gap between the panel and the right edge of the screen, in logical px.
+pub const EDGE_MARGIN: f64 = 10.0;
 
 pub const WINDOW_LABEL: &str = "island";
 
@@ -160,8 +166,11 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    // Right edge of the screen, vertically centred. The wake tab sits flush; the
+    // panel keeps a small gap so it does not touch the edge.
+    let margin = if collapsed { 0.0 } else { EDGE_MARGIN };
+    let x = mp.x + ms.width as i32 - pw as i32 - (margin * scale).round() as i32;
+    let y = mp.y + (ms.height as i32 - ph as i32) / 2;
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -175,6 +184,10 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    // Windows puts the frame shadow back after we change the window's ex-style
+    // (make_non_activating) and resize it. This window must be shadowless — the
+    // shadow would otherwise be a big dark rectangle around the transparent area.
+    let _ = win.set_shadow(false);
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here

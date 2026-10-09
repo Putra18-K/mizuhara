@@ -1,7 +1,7 @@
 // Minimal DOM helpers — no framework, as specified.
 
 type Attrs = Record<string, string | number | boolean | EventListener | undefined>;
-type Child = Node | string | null | undefined | false;
+export type Child = Node | string | null | undefined | false;
 
 export function h<K extends keyof HTMLElementTagNameMap>(
   tag: K,

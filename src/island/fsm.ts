@@ -1,5 +1,9 @@
-// Island open/close FSM — port of IslandStateMachine.swift.
-// No DOM, no Tauri: it only reports transitions.
+// Island open/close FSM — port of IslandStateMachine.swift, driven by hover.
+//
+// No DOM, no Tauri: it only reports transitions. The island is idle as a small
+// horizontal bar ("hidden") and opens the moment the cursor reaches it; when the
+// cursor leaves it closes again after a short grace, instead of waiting out long
+// timers. An alert that is waiting for an answer stays open (pinned).
 
 export type FsmState = "hidden" | "petit" | "home" | "mizuhara";
 
@@ -8,19 +12,16 @@ export class IslandStateMachine {
 
   onTransition: ((from: FsmState, to: FsmState) => void) | null = null;
 
-  /** home → petit delay, seconds. */
-  homeToPetitDelay = 15;
-  /** petit → hidden delay, seconds. */
-  petitToHiddenDelay = 60;
-  /** mizuhara → petit once the greeting animation ends (no hover). */
+  /** Grace before closing once the cursor has left, seconds. */
+  closeDelay = 0.35;
+  /** mizuhara → hidden once the greeting animation ends (no hover). */
   greetAutoCollapseDelay = 0.6;
-  /** mizuhara → petit while the mouse hovers the greeting. */
+  /** mizuhara → hidden while the mouse hovers the greeting. */
   greetHoverCollapseDelay = 10;
   /** An alert waiting for an answer stays open, even when the mouse leaves. */
   pinned = false;
 
-  private petitHide: number | null = null;
-  private homeCollapse: number | null = null;
+  private hide: number | null = null;
   private greetCollapse: number | null = null;
 
   // ── Inputs ──────────────────────────────────────────────────────────────────
@@ -30,17 +31,16 @@ export class IslandStateMachine {
     this.transition("mizuhara");
   }
 
+  /** Cursor on the island: open it, or keep an open one open. */
   mouseEntered() {
     switch (this.state) {
       case "hidden":
-        this.cancelTimers();
-        this.transition("petit");
-        break;
       case "petit":
-        this.clear("petitHide");
+        this.cancelTimers();
+        this.transition("home");
         break;
       case "home":
-        this.clear("homeCollapse");
+        this.clear("hide");
         break;
       case "mizuhara":
         this.scheduleGreetCollapse(this.greetHoverCollapseDelay);
@@ -48,25 +48,22 @@ export class IslandStateMachine {
     }
   }
 
+  /** Cursor away (or an event opened the island while the cursor was elsewhere). */
   mouseLeft() {
     switch (this.state) {
       case "hidden":
-        break;
       case "petit":
-        this.schedulePetitHide();
         break;
       case "home":
-        this.scheduleHomeCollapse();
+        this.scheduleHide();
         break;
       case "mizuhara":
-        this.clear("greetCollapse");
-        this.transition("petit");
         break;
     }
   }
 
   click() {
-    if (this.state !== "petit") return;
+    if (this.state === "home") return;
     this.cancelTimers();
     this.transition("home");
   }
@@ -75,14 +72,6 @@ export class IslandStateMachine {
   greetComplete() {
     if (this.state !== "mizuhara") return;
     if (this.greetCollapse == null) this.scheduleGreetCollapse(this.greetAutoCollapseDelay);
-  }
-
-  /** Non-alert work event: show compact from hidden. */
-  reveal() {
-    if (this.state !== "hidden") return;
-    this.cancelTimers();
-    this.transition("petit");
-    this.schedulePetitHide();
   }
 
   /** Alert or explicit request: open straight to expanded. */
@@ -94,7 +83,7 @@ export class IslandStateMachine {
   /// Explicit close (OK button, Escape, an alert being answered).
   forcePetit() {
     this.cancelTimers();
-    this.transition("petit");
+    this.transition("hidden");
   }
 
   forceHidden() {
@@ -104,40 +93,31 @@ export class IslandStateMachine {
 
   // ── Timers ──────────────────────────────────────────────────────────────────
 
-  private schedulePetitHide() {
-    this.clear("petitHide");
-    this.petitHide = window.setTimeout(() => {
-      this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
-    }, this.petitToHiddenDelay * 1000);
-  }
-
-  private scheduleHomeCollapse() {
-    this.clear("homeCollapse");
-    if (this.pinned) return;
-    this.homeCollapse = window.setTimeout(() => {
-      this.homeCollapse = null;
-      if (this.state === "home") this.transition("petit");
-    }, this.homeToPetitDelay * 1000);
+  /** Idempotent: the cursor poll calls this every tick while the cursor is away. */
+  private scheduleHide() {
+    if (this.hide != null || this.pinned) return;
+    this.hide = window.setTimeout(() => {
+      this.hide = null;
+      if (this.state === "home") this.transition("hidden");
+    }, this.closeDelay * 1000);
   }
 
   private scheduleGreetCollapse(delay: number) {
     this.clear("greetCollapse");
     this.greetCollapse = window.setTimeout(() => {
       this.greetCollapse = null;
-      if (this.state === "mizuhara") this.transition("petit");
+      if (this.state === "mizuhara") this.transition("hidden");
     }, delay * 1000);
   }
 
-  private clear(which: "petitHide" | "homeCollapse" | "greetCollapse") {
+  private clear(which: "hide" | "greetCollapse") {
     const id = this[which];
     if (id != null) window.clearTimeout(id);
     this[which] = null;
   }
 
   cancelTimers() {
-    this.clear("petitHide");
-    this.clear("homeCollapse");
+    this.clear("hide");
     this.clear("greetCollapse");
   }
 

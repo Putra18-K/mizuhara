@@ -7,6 +7,7 @@
 import { Ease, lerp, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
+import { draw as drawCharacter, expressionFor, hasArt } from "./character";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,7 +15,7 @@ export type EyeShape =
   | "pill" | "wide" | "dot" | "line" | "flat" | "happy" | "closed"
   | "spiral" | "heart" | "star" | "tired" | "wink" | "cup";
 
-export type BadgeKind = "dots" | "bang" | "question" | "dot";
+export type BadgeKind = "dots" | "bang" | "question" | "dot" | "anger";
 
 export interface Badge {
   kind: BadgeKind;
@@ -95,7 +96,7 @@ export const BOT_STATES: Record<BotStateName, BotStateCfg> = {
   searching: { ...base, color: C.searching, tint: 0.72, eye: "pill", badge: { kind: "dots", color: C.searching }, scans: true },
   approval: { ...base, color: C.approval, tint: 0.78, eye: "wide", badge: { kind: "bang", color: C.approval }, bounces: true },
   question: { ...base, color: C.question, tint: 0.75, eye: "pill", badge: { kind: "question", color: C.question }, tilt: 0.17 },
-  error: { ...base, color: C.error, tint: 0.78, eye: "flat", badge: { kind: "dot", color: C.error } },
+  error: { ...base, color: C.error, tint: 0.78, eye: "flat", badge: { kind: "anger", color: C.error } },
   finished: { ...base, color: C.finished, tint: 0.35, eye: "happy", badge: { kind: "dot", color: C.finished } },
   ratelimit: { ...base, color: C.ratelimit, tint: 0.72, eye: "tired", badge: { kind: "dot", color: C.ratelimit }, sweat: true },
   sleeping: { ...base, color: C.sleeping, tint: 0.32, eye: "closed", badge: null, breathes: true, zz: true },
@@ -193,6 +194,9 @@ export class BotEngine {
   eyeOverrideUntil = 0;
   permanentEye: EyeShape | null = null;
   permanentEmote: BotEmoteName | null = null;
+  /** Transient emote (triggerEmote) — what the character art should wear. */
+  activeEmote: BotEmoteName | null = null;
+  private activeEmoteUntil = 0;
   miniNextBehavior = 0;
 
   badge: Badge | null = null;
@@ -310,6 +314,8 @@ export class BotEngine {
     } else {
       this.eyeOverride = "line";
       this.eyeOverrideUntil = t + 0.8;
+      this.activeEmote = "annoyed";
+      this.activeEmoteUntil = t + 0.8;
       setTimeout(() => Sound.play("annoyed"), 60);
     }
   }
@@ -381,6 +387,8 @@ export class BotEngine {
     const t = now();
     this.eyeOverride = EMOTE_EYE[emote];
     this.eyeOverrideUntil = t + duration;
+    this.activeEmote = emote;
+    this.activeEmoteUntil = t + duration;
 
     switch (emote) {
       case "love":
@@ -580,6 +588,7 @@ export class BotEngine {
       this.eyeOverride = this.permanentEye;
       if (this.permanentEye) this.eyeOverrideUntil = Number.POSITIVE_INFINITY;
     }
+    if (this.activeEmote && n > this.activeEmoteUntil) this.activeEmote = null;
 
     if (n - this.lastAmbient > 1.3) {
       this.lastAmbient = n;
@@ -647,6 +656,13 @@ export class BotEngine {
     const cx = W / 2 + this.ox * R;
     const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
 
+    // The project's own sprite, when it is available, replaces everything the
+    // procedural body draws — hands, body, eyes and mouth included.
+    if (this.drawCharacterArt(x, R, cx, cy)) {
+      this.drawParticles(x, R, cx, cy);
+      return;
+    }
+
     this.drawHandsBehind(x, R, rx, ry, cx, cy);
 
     x.save();
@@ -680,6 +696,35 @@ export class BotEngine {
       this.drawBadge(x, this.badge, R, cx, cy);
     }
     this.drawParticles(x, R, cx, cy);
+  }
+
+  /**
+   * Swaps the procedural Mizuhara for the project's sprite. False while the art
+   * is still decoding, which sends the caller down the built-in body instead —
+   * the island must never flash empty at boot.
+   */
+  private drawCharacterArt(
+    x: CanvasRenderingContext2D, R: number, cx: number, cy: number,
+  ): boolean {
+    if (!hasArt()) return false;
+    const key = this.activeEmote ?? this.permanentEmote ?? this.state;
+    return drawCharacter(
+      x,
+      expressionFor(key),
+      {
+        R,
+        cx,
+        cy,
+        tilt: this.tilt,
+        sx: this.sx,
+        sy: this.sy,
+        open: this.open,
+        blush: Math.max(this.blush, this.tint * 0.5),
+        disc: this.isMini && this.bodyColor ? rgba(this.bodyColor, 0.55) : null,
+      },
+      this.badge,
+      this.badgeS,
+    );
   }
 
   private bodyPath(rx: number, ry: number, R: number): Path2D {
@@ -1039,6 +1084,20 @@ export class BotEngine {
           x.fill();
         }
       }
+    } else if (badge.kind === "anger") {
+      // The four-line anger cross, no disc behind it.
+      x.save();
+      x.strokeStyle = col;
+      x.lineWidth = Math.max(1.4, R * 0.06);
+      x.lineCap = "round";
+      for (let i = 0; i < 4; i++) {
+        x.rotate(Math.PI / 2);
+        x.beginPath();
+        x.moveTo(R * 0.06, 0);
+        x.lineTo(R * 0.3, 0);
+        x.stroke();
+      }
+      x.restore();
     } else if (badge.kind === "bang" || badge.kind === "question") {
       x.fillStyle = "#000";
       x.beginPath();

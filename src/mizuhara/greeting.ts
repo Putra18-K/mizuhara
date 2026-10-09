@@ -3,6 +3,7 @@
 
 import { Sound } from "../core/sound";
 import { COMPACT_W, NOTCH_H, NOTCH_W } from "../core/layout";
+import { draw as drawCharacter, expressionFor, SPRITE_W_R } from "./character";
 
 // ── Timing (mirrors greeting-v2.html `T`) ─────────────────────────────────────
 
@@ -265,68 +266,6 @@ function mizuharaPath(hw: number, hh: number): Path2D {
   return p;
 }
 
-function whiteFill(
-  x: CanvasRenderingContext2D, path: Path2D,
-  x0: number, y0: number, x1: number, y1: number,
-) {
-  const g = x.createLinearGradient(x0, y0, x1, y1);
-  g.addColorStop(0, "rgb(251,251,252)");
-  g.addColorStop(1, "rgb(231,233,236)");
-  x.save();
-  x.fillStyle = g;
-  x.fill(path);
-  x.restore();
-}
-
-function drawHandL(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose) {
-  const k = p.handL;
-  if (k <= 0.01) return;
-  const hb = hh * 2;
-  const r = hb * 0.15 * k;
-  const rx = lerp(-hw * 0.35, -hw - hb * 0.22, k);
-  let ry = lerp(hh * 0.85, hh * 0.62, k);
-  if (p.wave >= 0) ry += Math.sin(p.wave * 6) * hb * 0.02;
-  x.save();
-  x.translate(rx, ry);
-  const circ = new Path2D();
-  circ.ellipse(0, 0, r, r, 0, 0, Math.PI * 2);
-  whiteFill(x, circ, r, -r, -r, r);
-  x.strokeStyle = "rgba(0,0,0,0.08)";
-  x.lineWidth = 0.8;
-  x.stroke(circ);
-  x.restore();
-}
-
-function drawHandR(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose) {
-  const k = p.handR;
-  if (k <= 0.01) return;
-  const hb = hh * 2;
-  const L = hb * 0.4 * k;
-  const T2 = hb * 0.22 * k;
-  let rx = lerp(hw * 0.35, hw + hb * 0.2, k);
-  let ry = lerp(hh * 0.85, hh * 0.2, k);
-  let ang = -0.61;
-  if (p.wave >= 0) {
-    const w = p.wave * 2 * Math.PI * 2.5;
-    ang += Math.sin(w) * 0.21;
-    ry += Math.sin(w + 0.8) * hb * 0.04;
-    rx += Math.cos(w) * hb * 0.015;
-  }
-  x.save();
-  x.translate(rx, ry);
-  x.rotate(ang);
-  const g = x.createLinearGradient(L / 2, -T2 / 2, -L / 2, T2 / 2);
-  g.addColorStop(0, "rgb(251,251,252)");
-  g.addColorStop(1, "rgb(231,233,236)");
-  rr(x, -L / 2, -T2 / 2, L, T2, T2 / 2);
-  x.fillStyle = g;
-  x.fill();
-  x.strokeStyle = "rgba(0,0,0,0.08)";
-  x.lineWidth = 0.8;
-  x.stroke();
-  x.restore();
-}
-
 function drawMizuhara(x: CanvasRenderingContext2D, p: Pose) {
   const hh = p.hb / 2;
   const hw = hh * ASP;
@@ -349,86 +288,19 @@ function drawMizuhara(x: CanvasRenderingContext2D, p: Pose) {
     }
   }
 
-  x.save();
-  x.translate(p.x, p.y);
-  x.rotate(p.tilt);
-  x.scale(p.sx, p.sy);
-
-  drawHandL(x, hw, hh, p);
-  drawHandR(x, hw, hh, p);
-
-  const body = mizuharaPath(hw, hh);
-  whiteFill(x, body, hw * 0.6, -hh, -hw * 0.6, hh);
-
-  if (p.tint > 0) {
-    const g = x.createLinearGradient(0, hh, 0, -hh * 0.1);
-    g.addColorStop(0, `rgba(127,180,234,${p.tint})`);
-    g.addColorStop(1, "rgba(127,180,234,0)");
-    x.save();
-    x.clip(body);
-    x.fillStyle = g;
-    x.fill(body);
-    x.restore();
-  }
-
-  // Eyes
-  x.save();
-  x.clip(body);
-  x.fillStyle = "#16171A";
-  x.strokeStyle = "#16171A";
-  const er = p.hb * 0.06;
-  const sp = p.hb * 0.19;
-  const lx = p.lookX * hw * 0.42;
-  const ly = p.lookY * hh * 0.28 + hh * 0.12 + p.eyeRoll * hh * 1.25;
-  for (const sd of [-1, 1]) {
-    x.save();
-    x.translate(sd * sp + lx, ly);
-    if (p.eye === "happy") {
-      x.lineWidth = er * 0.95;
-      x.lineCap = "round";
-      x.beginPath();
-      x.arc(0, er * 0.6, er * 1.25, Math.PI * 1.15, Math.PI * 1.85);
-      x.stroke();
-    } else if (p.eye === "content") {
-      x.lineWidth = er * 0.95;
-      x.lineCap = "round";
-      x.beginPath();
-      x.arc(0, -er * 0.5, er * 1.25, Math.PI * 0.15, Math.PI * 0.85);
-      x.stroke();
-    } else {
-      x.scale(1, Math.max(0.12, p.open));
-      x.beginPath();
-      x.arc(0, 0, er, 0, Math.PI * 2);
-      x.fill();
-    }
-    x.restore();
-  }
-  x.restore();
-
-  // Activity badge
-  if (p.badge > 0.01) {
-    const br = hh * 0.3;
-    x.save();
-    x.translate(-hw * 0.78, -hh * 0.72);
-    x.scale(p.badge, p.badge);
-    x.fillStyle = "#000";
-    x.beginPath();
-    x.arc(0, 0, br + hh * 0.07, 0, Math.PI * 2);
-    x.fill();
-    x.fillStyle = "#3BA0F5";
-    x.beginPath();
-    x.arc(0, 0, br, 0, Math.PI * 2);
-    x.fill();
-    x.fillStyle = "#0B1B3A";
-    for (const i of [-1, 0, 1]) {
-      x.beginPath();
-      x.arc(i * br * 0.5, 0, br * 0.17, 0, Math.PI * 2);
-      x.fill();
-    }
-    x.restore();
-  }
-
-  x.restore();
+  const R = (2 * hw) / SPRITE_W_R;
+  const key = p.eye === "happy" ? "happy" : p.eye === "content" ? "finished" : "idle";
+  drawCharacter(
+    x,
+    expressionFor(key),
+    {
+      R, cx: p.x, cy: p.y,
+      tilt: p.tilt, sx: p.sx, sy: p.sy,
+      open: p.open, blush: 0, disc: null,
+    },
+    p.badge > 0.01 ? { kind: "dots", color: [0.231, 0.62, 1] } : null,
+    p.badge,
+  );
 }
 
 function drawParticles(x: CanvasRenderingContext2D, t: number, p: Pose) {

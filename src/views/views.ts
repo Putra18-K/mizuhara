@@ -2,7 +2,7 @@
 // colours and wording are copied from the Swift views so both platforms read
 // identically.
 
-import { h, svg, clear, dot } from "./dom";
+import { h, svg, clear, dot, type Child } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, type AgentTask } from "../core/state";
@@ -86,6 +86,9 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
   el.style.padding = `4px ${padRight}px 4px ${padLeft}px`;
   return el;
 }
+
+/** Left padding shared by every portrait card, clearing the character sprite. */
+const CARD_PAD = 68;
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
@@ -231,7 +234,14 @@ function buildOverview(actions: ViewActions): ViewHost {
       jump.style.display = detailOpen ? "none" : "";
 
       const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
+      // Nothing to list: hide the second card so it does not leave an empty block.
+      const hasOthers = others.length > 0;
+      right.style.display = hasOthers ? "" : "none";
+      left.style.flex = hasOthers ? "0 0 126px" : "1 1 auto";
+      left.style.height = hasOthers ? "126px" : "auto";
+      const pillKey = others
+        .map((t) => `${t.id}:${t.pillBadge ?? ""}:${State.sessionList(t.id).length}`)
+        .join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
         clear(pills);
@@ -245,12 +255,21 @@ function buildOverview(actions: ViewActions): ViewHost {
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
   const label = task.id === "integration_claude" ? "VS Code" : task.name;
   const canvas = createMiniBot(task, 24);
+  const sessions = State.sessionList(task.id).length;
   const pill = h(
     "div",
-    { class: "pill", onclick: () => actions.setFocus(task.id) },
+    {
+      class: "pill",
+      onclick: () => {
+        actions.setFocus(task.id);
+        // Several runs at once: open the list so every session is reachable.
+        if (sessions > 1) actions.setView("sessions");
+      },
+    },
     canvas,
     h("span", { class: "lbl", text: label }),
   );
+  if (sessions > 1) pill.append(h("span", { class: "pill-count", text: String(sessions) }));
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;
@@ -287,16 +306,14 @@ function lighten(hex: string, amount: number): string {
 // ── Empty ─────────────────────────────────────────────────────────────────────
 
 function buildEmpty(actions: ViewActions): ViewHost {
+  // A column, not a row: the portrait card is only 288 wide, so a title, a
+  // sentence and a button side by side left the text a ~90px sliver that wrapped
+  // to five lines and spilled out of the card.
   const body = h(
     "div",
-    { class: "stack", style: "padding:0 18px 0 118px;flex-direction:row;align-items:center;gap:16px" },
-    h(
-      "div",
-      { style: "display:flex;flex-direction:column;gap:5px" },
-      h("div", { class: "title", text: "Nothing running right now." }),
-      h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
-    ),
-    h("div", { class: "grow" }),
+    { class: "stack", style: `padding:0 18px 0 ${CARD_PAD}px;align-items:flex-start;gap:10px` },
+    h("div", { class: "title", text: "Nothing running right now." }),
+    h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
     btn("Ask Claude", "primary", () => actions.setView("prompt")),
   );
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
@@ -308,7 +325,7 @@ function buildApproval(actions: ViewActions): ViewHost {
   const who = h("div");
   const code = h("div", { class: "code" });
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
+  const el = h("div", { class: "view" }, card("amber", stack(CARD_PAD, 16, who, code, row)));
   let rowKey = "";
   return {
     el,
@@ -341,9 +358,9 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 function buildQuestion(): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
+  const title = h("div", { class: "title clamp-3" });
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  const el = h("div", { class: "view" }, card("cyan", stack(CARD_PAD, 16, who, title, row)));
   return {
     el,
     sync() {
@@ -362,12 +379,12 @@ function buildQuestion(): ViewHost {
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
-  const detail = h("div", { class: "detail" });
+  const detail = h("div", { class: "detail clamp-2" });
   const row = h("div", { class: "actions" },
     btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+    btn("Open in n8n", "secondary", () => actions.openTarget()),
   );
-  const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
+  const el = h("div", { class: "view" }, card("red", stack(CARD_PAD, 16, who, title, detail, row)));
   return {
     el,
     sync() {
@@ -384,18 +401,22 @@ function buildError(actions: ViewActions): ViewHost {
 
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
+  const title = h("div", { class: "title clamp-4" });
   const row = h("div", { class: "actions" },
     btn("Open terminal", "primary", () => actions.openTerminal()),
     btn("OK", "secondary", () => actions.collapse()),
   );
-  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
+  const el = h("div", { class: "view" }, card("green", stack(CARD_PAD, 16, who, title, row)));
   return {
     el,
     sync() {
       clear(who);
+      const session = State.focusSession;
       who.append(agentWho(State.focusTask, `${sourceLabel(State.focusTask)} finished`));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      // The final assistant message when the relay managed to read it, else the
+      // last step we saw. Trimmed so a long answer still fits the card.
+      const text = session?.result ?? session?.steps.at(-1) ?? "Session finished";
+      title.textContent = text.length > 240 ? `${text.slice(0, 240)}…` : text;
     },
   };
 }
@@ -405,7 +426,7 @@ function buildFinished(actions: ViewActions): ViewHost {
 function buildConfused(): ViewHost {
   const body = h(
     "div",
-    { class: "stack", style: "padding:0 18px 0 128px" },
+    { class: "stack", style: `padding:0 18px 0 ${CARD_PAD}px` },
     h("div", { class: "title", text: "Too many hits at once." }),
     h("div", { class: "sub", text: "Give me a sec — back to work in three seconds." }),
   );
@@ -415,8 +436,8 @@ function buildConfused(): ViewHost {
 // ── Note ──────────────────────────────────────────────────────────────────────
 
 function buildNote(): ViewHost {
-  const title = h("div", { class: "title" });
-  const el = h("div", { class: "view" }, card(null, h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title)));
+  const title = h("div", { class: "title clamp-3" });
+  const el = h("div", { class: "view" }, card(null, h("div", { class: "stack", style: `padding:0 18px 0 ${CARD_PAD}px` }, title)));
   return {
     el,
     sync() {
@@ -428,12 +449,15 @@ function buildNote(): ViewHost {
 // ── In-island settings ────────────────────────────────────────────────────────
 
 function buildSettings(actions: ViewActions): ViewHost {
+  const row = (...children: Child[]) => h("div", { class: "settings-row" }, ...children);
+  const grow = () => h("div", { class: "grow" });
+
   const soundSwitch = h("button", { class: "switch", onclick: () => actions.toggleSound() });
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
   }) as HTMLInputElement;
-  const autoLabel = h("span", {});
+
   const segButtons = [10, 15, 30].map((s) =>
     h("button", { onclick: () => actions.setAutoClose(s) }, `${s}s`),
   );
@@ -441,35 +465,25 @@ function buildSettings(actions: ViewActions): ViewHost {
   const ccBadge = h("span", { class: "status-badge" });
   const apiBadge = h("span", { class: "status-badge" });
 
+  // One control per row, each pushed against its label — a fixed 288-wide column
+  // leaves no room for the old inline label + control + badges + link, which is
+  // what made "Auto-close" wrap and the "Settings…" link fall off the card.
   const rows = h(
     "div",
     { class: "settings-rows" },
-    h("div", { class: "settings-row" }, soundSwitch, h("span", { text: "Sound" }), volume),
-    h(
-      "div",
-      { class: "settings-row" },
-      svg(ICONS.timer, 12),
-      autoLabel,
-      h("div", { class: "seg" }, ...segButtons),
-    ),
-    h(
-      "div",
-      { class: "settings-row", style: "gap:14px" },
-      claudeBadge,
-      ccBadge,
-      apiBadge,
-      h("div", { class: "grow" }),
-      h("button", {
-        class: "link-btn",
-        style: "color:#8e939c;font-size:11.5px",
-        text: "Settings…",
-        onclick: () => actions.openSettingsWindow(),
-      }),
-    ),
+    row(soundSwitch, h("span", { class: "lab", text: "Sound" }), grow(), volume),
+    row(h("span", { class: "lab", text: "Auto-close" }), grow(), h("div", { class: "seg" }, ...segButtons)),
+    row(claudeBadge, ccBadge, apiBadge),
+    row(grow(), h("button", {
+      class: "link-btn",
+      style: "color:#8e939c",
+      text: "Settings…",
+      onclick: () => actions.openSettingsWindow(),
+    })),
   );
 
   const el = h("div", { class: "view" },
-    card(null, h("div", { class: "stack", style: "padding:14px 16px 14px 84px" }, rows)));
+    card(null, h("div", { class: "stack", style: `padding:14px 16px 14px ${CARD_PAD}px` }, rows)));
 
   return {
     el,
@@ -478,20 +492,69 @@ function buildSettings(actions: ViewActions): ViewHost {
       soundSwitch.classList.toggle("on", s.soundEnabled);
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
-      autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
       segButtons.forEach((b, i) => b.classList.toggle("on", s.autoCloseInterval === [10, 15, 30][i]));
       clear(claudeBadge);
       claudeBadge.append(
         dot(s.hooksInstalled ? "#22C55E" : "#F4505E", 6),
         h("span", { text: "Claude Code" }),
       );
-      clear(apiBadge);
-      apiBadge.append(dot("#F4505E", 6), h("span", { text: "API" }));
       clear(ccBadge);
       ccBadge.append(
         dot(s.commandcodeHooksInstalled ? "#22C55E" : "#F4505E", 6),
-        h("span", { text: "Command Code" }),
+        h("span", { text: "Command" }),
       );
+      clear(apiBadge);
+      apiBadge.append(dot("#F4505E", 6), h("span", { text: "API" }));
+    },
+  };
+}
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+/** An agent can run several sessions at once; this lists them all. */
+function buildSessions(actions: ViewActions): ViewHost {
+  const who = h("div", { class: "who" });
+  const list = h("div", { class: "session-list" });
+  const el = h("div", { class: "view" }, card(null, h("div", { class: "card-body" }, who, list)));
+
+  const stateColor: Record<string, string> = {
+    idle: "#8E939C", sleeping: "#9492B8",
+    working: "#3B9EFF", thinking: "#A78BFA", searching: "#6366F1",
+    approval: "#F5A524", question: "#22D3EE", error: "#F4505E",
+    finished: "#34D399", ratelimit: "#FB923C", dizzy: "#F472B6",
+  };
+
+  return {
+    el,
+    sync() {
+      const task = State.focusTask;
+      clear(who);
+      if (task) {
+        const n = State.sessionList(task.id).length;
+        who.append(
+          dot(task.color, 7),
+          h("span", { class: "name", text: task.name }),
+          h("span", { class: "tool", text: n === 1 ? "1 session" : `${n} sessions` }),
+        );
+      }
+      clear(list);
+      if (!task) return;
+      const active = State.activeSessionId(task.id);
+      for (const s of State.sessionList(task.id)) {
+        const row = h(
+          "div",
+          { class: s.id === active ? "session-row active" : "session-row" },
+          dot(stateColor[s.state] ?? "#8E939C", 7),
+          h("span", { class: "session-name", text: s.label }),
+          h("span", { class: "session-step", text: s.steps.at(-1) ?? s.state }),
+        );
+        row.addEventListener("click", () => {
+          State.setActiveSession(task.id, s.id);
+          actions.setFocus(task.id);
+          actions.setView(State.defaultView());
+        });
+        list.append(row);
+      }
     },
   };
 }
@@ -501,7 +564,7 @@ function buildSettings(actions: ViewActions): ViewHost {
 function buildPlaceholder(title: string, sub: string): ViewHost {
   const body = h(
     "div",
-    { class: "stack", style: "padding:0 18px 0 118px" },
+    { class: "stack", style: `padding:0 18px 0 ${CARD_PAD}px` },
     h("div", { class: "title", text: title }),
     h("div", { class: "sub", text: sub }),
   );
@@ -524,6 +587,7 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
+  map.set("sessions", buildSessions(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());

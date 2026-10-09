@@ -62,6 +62,9 @@ export const Bridge = {
   /** Writes to %LOCALAPPDATA%\Mizuhara\mizuhara.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),
 
+  /** Desktop notification (Windows toast), e.g. when an agent finishes. */
+  notify: (title: string, body: string) => call<void>("notify", { title, body }),
+
   // ── Claude Code hooks ─────────────────────────────────────────────────────
   hooksStatus: () => call<HookStatus>("hooks_status"),
   /** Diff to show before anything is written. `install: false` previews removal. */

@@ -27,6 +27,8 @@ interface HookPayload {
   session_id?: string;
   cwd?: string;
   message?: string;
+  /** Final assistant message, attached by the relay on Stop (from the transcript). */
+  result?: string;
   /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
   prompt?: string;
   tool_name?: string;
@@ -135,15 +137,6 @@ function upsert(projectName: string, cwd: string) {
   if (cwd) t.sessionCwd = cwd;
 }
 
-function clearSession() {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
-  if (!t) return;
-  t.steps = [];
-  t.stepIndex = 0;
-  t.name = "VS Code";
-  t.pillBadge = null;
-}
-
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
 }
@@ -159,6 +152,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
+  const sid = payload.session_id ?? "";
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
 
@@ -168,20 +162,19 @@ function handleHook(island: Island, payload: HookPayload) {
   const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
 
-  const focused = State.focusId === agentId;
+  /** How this agent is named in notifications and the finished card. */
+  const agentLabel = isExternalAgent
+    ? (KNOWN_AGENTS[validAgent!]?.name ?? validAgent!)
+    : "Claude Code";
 
-  /** Alerts force the island open; work events only reveal the compact island. */
+  /** Alerts open the island; work events only update the pills — it opens on hover. */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
-    if (State.mode === "expanded") {
-      if (isAlert) island.setView(view);
-    } else if (isAlert) {
-      island.alert(view);
-    } else if (State.mode === "hidden") {
-      island.reveal();
-    }
+    if (!isAlert) return;
+    if (State.mode === "expanded") island.setView(view);
+    else island.alert(view);
   };
 
-  /** Ensure the agent pill exists (no-op for Claude Code). */
+  /** Ensure the agent pill exists (no-op for Claude Code) and its session. */
   const ensurePill = () => {
     if (isExternalAgent) {
       const known = KNOWN_AGENTS[validAgent!];
@@ -193,7 +186,13 @@ function handleHook(island: Island, payload: HookPayload) {
     } else {
       upsert(projectName, cwd);
     }
+    // One agent can run several sessions at once; the active one drives the pill.
+    State.touchSession(agentId, sid, projectName, cwd);
   };
+
+  // Every event belongs to a session. Create the pill/session up front, wherever
+  // the event arrives (a session can be running before we ever see SessionStart).
+  ensurePill();
 
   switch (name) {
     case "SessionStart":
@@ -204,83 +203,98 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "UserPromptSubmit": {
       ensurePill();
-      State.updateTask(agentId, "thinking");
+      State.setSessionState(agentId, sid, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
-      if (asked) State.appendStep(agentId, asked.slice(0, 60));
+      if (asked) State.appendSessionStep(agentId, sid, asked.slice(0, 60));
       surface("overview", false);
       break;
     }
 
     case "PreToolUse": {
       ensurePill();
-      State.updateTask(agentId, "working");
+      State.setSessionState(agentId, sid, "working");
       const tool = payload.tool_name ?? "Tool";
-      State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
+      State.appendSessionStep(agentId, sid, stepLabel(tool, payload.tool_input ?? {}));
       surface("overview", false);
       break;
     }
 
     case "PostToolUse":
-      State.updateTask(agentId, "working");
+      State.setSessionState(agentId, sid, "working");
       break;
 
     case "PostToolUseFailure":
-      State.updateTask(agentId, "working");
-      State.appendStep(agentId, "⚠ failed");
+      State.setSessionState(agentId, sid, "working");
+      State.appendSessionStep(agentId, sid, "⚠ failed");
       break;
 
     case "Notification": {
       const message = payload.message ?? "";
       const lower = message.toLowerCase();
       if (lower.includes("rate limit") || lower.includes("limite d")) {
-        State.updateTask(agentId, "ratelimit");
+        State.setSessionState(agentId, sid, "ratelimit");
         Sound.play("rate");
       } else if (message.endsWith("?")) {
-        State.updateTask(agentId, "question");
-        State.appendStep(agentId, message);
+        State.setSessionState(agentId, sid, "question");
+        State.appendSessionStep(agentId, sid, message);
       }
       break;
     }
 
-    case "Stop":
-      State.updateTask(agentId, "finished");
-      if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
+    case "Stop": {
+      State.setSessionState(agentId, sid, "finished");
+      // The final assistant message, read from the transcript by the relay.
+      State.setSessionResult(agentId, sid, payload.result ?? null);
+      if (payload.message) State.appendSessionStep(agentId, sid, payload.message.slice(0, 60));
       Sound.play("finish");
-      if (focused) surface("finished", true);
-      else State.setPillBadge(agentId, "finished");
+      // The "an agent finished" notification: bring that session forward, open the
+      // finished card with its result, and raise a system notification too so it is
+      // seen even when the island is tucked away.
+      State.setActiveSession(agentId, sid);
+      State.setFocus(agentId);
+      surface("finished", true);
+      const done = (payload.result ?? payload.message ?? `Finished in ${projectName}`).trim();
+      void Bridge.notify(`${agentLabel} · selesai`, done.length > 180 ? `${done.slice(0, 180)}…` : done);
+      // Keep the result around long enough to be read, then clear the pill.
       window.setTimeout(() => {
         if (isExternalAgent) {
-          State.removeTask(agentId);
+          State.removeSession(agentId, sid);
         } else {
-          State.updateTask(agentId, "idle");
-          State.setPillBadge(agentId, null);
+          State.setSessionState(agentId, sid, "idle");
+          State.setSessionBadge(agentId, sid, null);
         }
-      }, 5200);
+      }, 90_000);
       break;
+    }
 
-    case "StopFailure":
-      State.updateTask(agentId, "error");
+    case "StopFailure": {
+      State.setSessionState(agentId, sid, "error");
+      State.setSessionResult(agentId, sid, payload.result ?? null);
       Sound.play("error");
-      if (focused) surface("error", true);
-      else State.setPillBadge(agentId, "error");
+      State.setActiveSession(agentId, sid);
+      State.setFocus(agentId);
+      surface("error", true);
+      const why = (payload.result ?? payload.message ?? "Stopped on an error").trim();
+      void Bridge.notify(`${agentLabel} · error`, why.length > 180 ? `${why.slice(0, 180)}…` : why);
       break;
+    }
 
     case "SessionEnd":
       if (isExternalAgent) {
-        State.removeTask(agentId);
+        State.removeSession(agentId, sid);
       } else {
-        State.updateTask(agentId, "idle");
-        clearSession();
+        State.setSessionState(agentId, sid, "idle");
+        State.clearSession(agentId, sid);
       }
       break;
 
     case "SubagentStart":
-      State.appendStep(agentId, "+ subagent");
+      State.appendSessionStep(agentId, sid, "+ subagent");
       break;
 
     case "SubagentStop":
-      State.appendStep(agentId, "• subagent done");
+      State.appendSessionStep(agentId, sid, "• subagent done");
       break;
 
     case "PermissionRequest": {
@@ -318,7 +332,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(agentId, "approval");
+      State.setSessionState(agentId, sid, "approval");
       State.isPinned = true;
       Sound.play("approval");
       island.alert("approval");
@@ -330,8 +344,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(agentId, "working");
-        State.setPillBadge(agentId, null);
+        State.setSessionState(agentId, sid, "working");
+        State.setSessionBadge(agentId, sid, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);

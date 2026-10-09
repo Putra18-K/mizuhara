@@ -7,12 +7,14 @@ import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { loadCharacter } from "./mizuhara/character";
 
 async function main() {
   const root = document.getElementById("root");
   if (!root) return;
 
   void Sound.preload();
+  void loadCharacter();
 
   const island = new Island(root);
 
@@ -64,6 +66,9 @@ async function main() {
   registerHookHandlers(island);
   registerIntegrationHandlers(island);
 
+  // The greeting and the drop sequence draw the sprite too, so wait for it
+  // rather than animating an empty stage on the first frame.
+  await loadCharacter();
   island.launch();
 
   // In a plain browser there is no wake strip behind the cursor: make the whole

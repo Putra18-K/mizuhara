@@ -21,6 +21,21 @@ export interface AgentTask {
   sessionCwd?: string | null;
 }
 
+/** One live run of an agent. An agent pill can hold several at once. */
+export interface AgentSession {
+  id: string;
+  /** Project name of the session. */
+  label: string;
+  cwd: string;
+  state: BotStateName;
+  steps: string[];
+  stepIndex: number;
+  badge: PillBadge | null;
+  /** Final assistant message, read from the transcript on Stop. */
+  result: string | null;
+  updatedAt: number;
+}
+
 export interface ApprovalInfo {
   requestId: string;
   sessionId: string;
@@ -122,6 +137,10 @@ class AppState {
   tasks: AgentTask[] = [];
   focusId: string | null = null;
 
+  /** Live sessions per agent pill: one agent can run several at once. */
+  sessions: Record<string, AgentSession[]> = {};
+  private activeSession: Record<string, string> = {};
+
   stateOverride: BotStateName | null = null;
 
   /** Cursor in logical screen pixels, origin top-left (like AppState.mousePosition). */
@@ -173,11 +192,22 @@ class AppState {
     return this.tasks.filter((t) => t.id !== this.focusId);
   }
 
+  /** The session behind the focused pill (its steps, result and state). */
+  get focusSession(): AgentSession | null {
+    const t = this.focusTask;
+    if (!t) return null;
+    const list = this.sessions[t.id];
+    if (!list || list.length === 0) return null;
+    const sid = this.activeSessionId(t.id);
+    return list.find((x) => x.id === sid) ?? list[0];
+  }
+
   setFocus(id: string) {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     this.focusId = id;
     t.pillBadge = null;
+    for (const s of this.sessions[id] ?? []) s.badge = null;
     this.notify();
   }
 
@@ -202,6 +232,127 @@ class AppState {
     if (!t) return;
     t.pillBadge = badge;
     this.notify();
+  }
+
+  // ── Sessions ───────────────────────────────────────────────────────────────
+  // An agent pill ("Command Code", "VS Code", any --agent tag) can have several
+  // sessions running at once. The *active* one is mirrored onto the pill, so the
+  // ticker, the bot colour and the badge keep working with no view changes.
+
+  sessionList(agentId: string): AgentSession[] {
+    return this.sessions[agentId] ?? [];
+  }
+
+  activeSessionId(agentId: string): string | null {
+    const list = this.sessions[agentId];
+    if (!list || list.length === 0) return null;
+    return this.activeSession[agentId] ?? list[0].id;
+  }
+
+  /** Creates or refreshes a session; the agent pill must already exist. */
+  touchSession(
+    agentId: string, sessionId: string, label: string, cwd: string,
+  ): AgentSession | null {
+    if (!this.tasks.some((t) => t.id === agentId)) return null;
+    const sid = sessionId || "default";
+    const list = this.sessions[agentId] ?? (this.sessions[agentId] = []);
+    let s = list.find((x) => x.id === sid);
+    if (!s) {
+      s = {
+        id: sid, label: label || "Session", cwd, state: "idle",
+        steps: [], stepIndex: 0, badge: null, result: null,
+        updatedAt: performance.now(),
+      };
+      list.push(s);
+    }
+    if (label) s.label = label;
+    if (cwd) s.cwd = cwd;
+    s.updatedAt = performance.now();
+    if (!this.activeSession[agentId]) this.activeSession[agentId] = sid;
+    this.mirrorSessions(agentId);
+    this.notify();
+    return s;
+  }
+
+  setActiveSession(agentId: string, sessionId: string) {
+    this.activeSession[agentId] = sessionId;
+    this.mirrorSessions(agentId);
+    this.notify();
+  }
+
+  setSessionState(agentId: string, sessionId: string, state: BotStateName) {
+    this.withSession(agentId, sessionId, (s) => { s.state = state; });
+  }
+
+  appendSessionStep(agentId: string, sessionId: string, step: string) {
+    this.withSession(agentId, sessionId, (s) => {
+      s.steps.push(step);
+      if (s.steps.length > 20) s.steps.shift();
+      s.stepIndex = s.steps.length - 1;
+    });
+  }
+
+  setSessionBadge(agentId: string, sessionId: string, badge: PillBadge | null) {
+    this.withSession(agentId, sessionId, (s) => { s.badge = badge; });
+  }
+
+  /** The final assistant message of a run, shown on the "finished" card. */
+  setSessionResult(agentId: string, sessionId: string, result: string | null) {
+    this.withSession(agentId, sessionId, (s) => { s.result = result; });
+  }
+
+  /** Drops one session; removes the pill once its last session is gone. */
+  removeSession(agentId: string, sessionId: string) {
+    const list = this.sessions[agentId];
+    if (!list) return;
+    const sid = sessionId || "default";
+    const idx = list.findIndex((x) => x.id === sid);
+    if (idx < 0) return;
+    list.splice(idx, 1);
+    if (this.activeSession[agentId] === sid) this.activeSession[agentId] = list[0]?.id ?? "";
+    if (list.length === 0) {
+      delete this.sessions[agentId];
+      delete this.activeSession[agentId];
+      this.removeTask(agentId);
+      return;
+    }
+    this.mirrorSessions(agentId);
+    this.notify();
+  }
+
+  /** Resets one session's steps without dropping it (Claude Code SessionEnd). */
+  clearSession(agentId: string, sessionId: string) {
+    this.withSession(agentId, sessionId, (s) => {
+      s.steps = [];
+      s.stepIndex = 0;
+      s.state = "idle";
+      s.badge = null;
+    });
+  }
+
+  private withSession(agentId: string, sessionId: string, fn: (s: AgentSession) => void) {
+    const list = this.sessions[agentId];
+    if (!list) return;
+    const s = list.find((x) => x.id === (sessionId || "default"));
+    if (!s) return;
+    fn(s);
+    s.updatedAt = performance.now();
+    this.mirrorSessions(agentId);
+    this.notify();
+  }
+
+  /** Copies the active session onto the pill so existing views need no change. */
+  private mirrorSessions(agentId: string) {
+    const t = this.tasks.find((x) => x.id === agentId);
+    const list = this.sessions[agentId];
+    if (!t || !list || list.length === 0) return;
+    const sid = this.activeSession[agentId] ?? list[0].id;
+    const s = list.find((x) => x.id === sid) ?? list[0];
+    t.state = s.state;
+    t.steps = s.steps;
+    t.stepIndex = s.stepIndex;
+    if (s.cwd) t.sessionCwd = s.cwd;
+    t.pillBadge = list.find((x) => x.badge)?.badge ?? null;
   }
 
   /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
@@ -237,6 +388,8 @@ class AppState {
     const idx = this.tasks.findIndex((t) => t.id === id);
     if (idx < 0) return;
     this.tasks.splice(idx, 1);
+    delete this.sessions[id];
+    delete this.activeSession[id];
     if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? "integration_claude";
     this.notify();
   }

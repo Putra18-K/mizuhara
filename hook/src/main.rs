@@ -41,6 +41,12 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+/// How much of a transcript we are willing to read looking for the final message.
+const TRANSCRIPT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Cap on the final message we attach on Stop (under MAX_FIELD_LEN so the
+/// truncation pass below leaves it alone).
+const RESULT_MAX_LEN: usize = 1_900;
+
 /// Command Code tools that become an island approval card. Only in `default`
 /// mode, where Command Code would have prompted anyway — reads stay silent.
 const COMMANDCODE_APPROVAL_TOOLS: &[&str] = &["shell_command", "write_file", "edit_file"];
@@ -190,6 +196,19 @@ fn prepare() -> Option<Prepared> {
         .as_object_mut()?
         .insert("hook_event_name".into(), Value::String(event.clone()));
 
+    // End of a turn: attach the assistant's final message for the "finished" card,
+    // read straight from the transcript the agent just wrote. The path is dropped
+    // from the payload afterwards; the island never has to open a file itself.
+    if event == "Stop" || event == "StopFailure" {
+        if let Some(path) = payload.get("transcript_path").and_then(Value::as_str) {
+            if let Some(result) = last_assistant_message(path) {
+                payload
+                    .as_object_mut()?
+                    .insert("result".into(), Value::String(result));
+            }
+        }
+    }
+
     for field in DROPPED_FIELDS {
         payload.as_object_mut()?.remove(*field);
     }
@@ -298,6 +317,71 @@ fn commandcode_tool(name: &str) -> &str {
         "edit_file" => "Edit",
         other => other,
     }
+}
+
+/// The last assistant message in a session transcript (JSONL). Works for Command
+/// Code and Claude Code: both write `{"message":{"role":"assistant","content":[…}}]`
+/// lines and both mark text blocks with `"type":"text"` (thinking is skipped).
+///
+/// Scans from the end, so only the final answer is ever built. Reads at most the
+/// last `TRANSCRIPT_MAX_BYTES` of a very long file.
+fn last_assistant_message(path: &str) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let bytes = if meta.len() > TRANSCRIPT_MAX_BYTES {
+        use std::io::{Seek, SeekFrom};
+        let mut file = std::fs::File::open(path).ok()?;
+        file.seek(SeekFrom::End(-(TRANSCRIPT_MAX_BYTES as i64))).ok()?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+        buf
+    } else {
+        std::fs::read(path).ok()?
+    };
+
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(message) = value.get("message") else { continue };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(parts) = message.get("content").and_then(Value::as_array) else { continue };
+        let mut out = String::new();
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            if let Some(t) = part.get("text").and_then(Value::as_str) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(t);
+            }
+        }
+        let out = out.trim();
+        if !out.is_empty() {
+            return Some(truncate_to(out, RESULT_MAX_LEN));
+        }
+    }
+    None
+}
+
+/// `s` cut to at most `max` bytes on a char boundary, with an ellipsis.
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = s[..end].to_string();
+    out.push('…');
+    out
 }
 
 /// Caps every string in the payload. A single Write can carry a whole file.
@@ -446,5 +530,29 @@ mod tests {
         let s = v["tool_input"]["content"].as_str().unwrap();
         assert!(s.len() <= MAX_FIELD_LEN + 4);
         assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn the_last_assistant_message_is_read_from_a_transcript() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!("mizuhara-tx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for line in [
+            r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+            // A thinking-only assistant line must not be mistaken for the answer.
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}"#,
+            r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"first"},{"type":"text","text":"answer"}]}}"#,
+        ] {
+            writeln!(f, "{line}").unwrap();
+        }
+        drop(f);
+        assert_eq!(
+            last_assistant_message(path.to_str().unwrap()).as_deref(),
+            Some("first\nanswer")
+        );
+        assert!(last_assistant_message("C:/nope/missing.jsonl").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

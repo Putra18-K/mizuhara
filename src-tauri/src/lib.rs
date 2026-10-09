@@ -94,9 +94,10 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
-    // The wake strip must always take the mouse, and a resize invalidates the flag.
+    // The idle bar must take the mouse and be polled so hovering it opens the
+    // island; a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
-    shared.gate.set_active(!collapsed);
+    shared.gate.set_active(true);
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -176,6 +177,14 @@ fn quit_app(app: AppHandle) {
 #[tauri::command]
 fn set_paused(paused: bool) {
     integrations::set_paused(paused);
+}
+
+/// A desktop notification — used when an agent finishes, so you hear about it
+/// even when the island is tucked away at the right edge.
+#[tauri::command]
+fn notify(app: AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
@@ -401,6 +410,7 @@ pub fn run() {
             let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_notification::init())
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
@@ -437,6 +447,7 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            notify,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -446,6 +457,8 @@ pub fn run() {
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);
+                // Changing the ex-style above makes Windows re-add the frame shadow.
+                let _ = win.set_shadow(false);
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();
             }
