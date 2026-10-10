@@ -14,3 +14,4 @@ src-tauri/gen/schemas/
 
 # Command Code session skills - not part of the project.
 .commandcode/
+graphify-out/

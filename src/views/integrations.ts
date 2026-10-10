@@ -9,9 +9,29 @@ import { ICONS } from "./icons";
 import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
 
+/**
+ * Resend mengirim `2023-04-03 22:13:42.674981+00` (spasi, mikrodetik, offset tanpa
+ * menit). Itu tidak diparse konsisten oleh `new Date()`, jadi dinormalkan dulu.
+ */
+function parseDate(value: unknown): Date {
+  if (typeof value === "number") return new Date(value);
+  const raw = String(value)
+    .trim()
+    .replace(" ", "T")
+    .replace(/(\.\d{3})\d+/, "$1")
+    .replace(/(T.*[+-]\d\d)$/, "$1:00");
+  return new Date(raw);
+}
+
+/** "2m" -> "2m ago"; "just now" tetap "just now". */
+function ago(value: unknown): string {
+  const t = timeAgo(value);
+  return t === "" || t === "just now" ? t : `${t} ago`;
+}
+
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
-  const date = typeof value === "number" ? new Date(value) : new Date(String(value));
+  const date = parseDate(value);
   const diff = (Date.now() - date.getTime()) / 1000;
   if (!Number.isFinite(diff)) return "";
   if (diff < 60) return "just now";
@@ -148,7 +168,7 @@ function vercelDetail(onBack: () => void): HTMLElement {
   if (d.commitMessage) body.append(h("div", { class: "int-commit", text: String(d.commitMessage) }));
   const meta = h("div", { class: "int-meta" });
   if (d.branch) meta.append(h("span", { text: String(d.branch) }));
-  meta.append(h("span", { text: `${timeAgo(d.createdAt)} ago` }));
+  meta.append(h("span", { text: ago(d.createdAt) }));
   body.append(meta);
   if (d.url) {
     body.append(

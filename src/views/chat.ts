@@ -71,8 +71,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     onHeightChange();
 
     const file = State.droppedFile;
-    const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
+    // Selalu kirim: Rust sendiri yang memutuskan (chat.is_empty()) apakah konteks
+    // ikut. Menebak dari panjang riwayat di sini salah setelah turn pertama gagal.
+    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
 
     try {
       const reply = await Bridge.chatSend(query, context);

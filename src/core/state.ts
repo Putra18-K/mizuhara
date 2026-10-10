@@ -19,6 +19,8 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Penghitung step yang terus naik; stepIndex berhenti di 19 saat jendela 20 step penuh. */
+  stepSeq?: number;
 }
 
 /** One live run of an agent. An agent pill can hold several at once. */
@@ -30,6 +32,7 @@ export interface AgentSession {
   state: BotStateName;
   steps: string[];
   stepIndex: number;
+  stepSeq: number;
   badge: PillBadge | null;
   /** Final assistant message, read from the transcript on Stop. */
   result: string | null;
@@ -163,6 +166,8 @@ class AppState {
   pendingApproval: ApprovalInfo | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
+  /** Apakah API key Anthropic tersimpan (untuk badge di settings island). */
+  apiKeyPresent = false;
 
   lastActivity = performance.now();
 
@@ -222,6 +227,7 @@ class AppState {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     t.steps.push(step);
+    t.stepSeq = (t.stepSeq ?? 0) + 1;
     if (t.steps.length > 20) t.steps.shift();
     t.stepIndex = t.steps.length - 1;
     this.notify();
@@ -260,7 +266,7 @@ class AppState {
     if (!s) {
       s = {
         id: sid, label: label || "Session", cwd, state: "idle",
-        steps: [], stepIndex: 0, badge: null, result: null,
+        steps: [], stepIndex: 0, stepSeq: 0, badge: null, result: null,
         updatedAt: performance.now(),
       };
       list.push(s);
@@ -287,6 +293,7 @@ class AppState {
   appendSessionStep(agentId: string, sessionId: string, step: string) {
     this.withSession(agentId, sessionId, (s) => {
       s.steps.push(step);
+      s.stepSeq++;
       if (s.steps.length > 20) s.steps.shift();
       s.stepIndex = s.steps.length - 1;
     });
@@ -325,6 +332,7 @@ class AppState {
     this.withSession(agentId, sessionId, (s) => {
       s.steps = [];
       s.stepIndex = 0;
+      s.stepSeq = 0;
       s.state = "idle";
       s.badge = null;
     });
@@ -351,6 +359,7 @@ class AppState {
     t.state = s.state;
     t.steps = s.steps;
     t.stepIndex = s.stepIndex;
+    t.stepSeq = s.stepSeq;
     if (s.cwd) t.sessionCwd = s.cwd;
     t.pillBadge = list.find((x) => x.badge)?.badge ?? null;
   }

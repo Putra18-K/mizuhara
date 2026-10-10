@@ -721,7 +721,29 @@ export class Island {
     requestAnimationFrame(this.frame);
   }
 
+  private frameErrors = 0;
+
   private frame = (nowMs: number) => {
+    let busy = true;
+    try {
+      busy = this.step(nowMs);
+    } catch (err) {
+      // Tanpa ini, satu exception membuat requestAnimationFrame tidak pernah
+      // dipanggil lagi dan `running` tetap true: island beku sampai restart.
+      if (this.frameErrors++ < 5) {
+        void Bridge.log(`frame error: ${err instanceof Error ? err.stack : String(err)}`);
+      }
+      this.dirty = true;
+    }
+    if (busy) {
+      requestAnimationFrame(this.frame);
+    } else {
+      this.running = false;
+      Sound.idle();
+    }
+  };
+
+  private step(nowMs: number): boolean {
     const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
 
@@ -778,13 +800,8 @@ export class Island {
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
         greetingActive || this.engine.busy || UploadSeq.isActive;
 
-    if (busy) {
-      requestAnimationFrame(this.frame);
-    } else {
-      this.running = false;
-      Sound.idle();
-    }
-  };
+    return busy;
+  }
 
   private updateBotTargets() {
     const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);

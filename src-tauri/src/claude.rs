@@ -19,6 +19,8 @@ const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 4096;
 /// Text and code files are inlined; anything larger is skipped, as on macOS.
 const MAX_INLINE_TEXT: u64 = 200_000;
+/// PDF dan gambar dibaca penuh ke memori, di-base64, lalu di-clone tiap turn.
+const MAX_BINARY: u64 = 20 * 1024 * 1024;
 
 pub const DEFAULT_MODEL: &str = "claude-opus-5";
 
@@ -86,7 +88,7 @@ pub async fn send(
     if chat.is_empty() {
         match &context {
             Some(ChatContext::File { name, path }) => {
-                if let Some(block) = file_block(path) {
+                if let Some(block) = file_block(path)? {
                     content.push(block);
                 }
                 content.push(json!({ "type": "text", "text": format!("File: {name}") }));
@@ -159,7 +161,7 @@ pub async fn send(
 
 async fn call(key: &str, body: &Value) -> Result<Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -194,7 +196,7 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
 
 /// PDF → document block, image → image block, text/code → inline text.
 /// Mirrors readFileAsBlock() in ClaudeService.swift.
-fn file_block(path: &str) -> Option<Value> {
+fn file_block(path: &str) -> Result<Option<Value>, String> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -211,19 +213,29 @@ fn file_block(path: &str) -> Option<Value> {
     };
 
     if let Some((block_type, media)) = media_type {
-        let bytes = std::fs::read(path).ok()?;
-        return Some(json!({
+        let len = std::fs::metadata(path)
+            .map_err(|e| format!("cannot read file: {e}"))?
+            .len();
+        if len > MAX_BINARY {
+            return Err(format!(
+                "File too large ({} MB, max {} MB).",
+                len / 1_048_576,
+                MAX_BINARY / 1_048_576
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("cannot read file: {e}"))?;
+        return Ok(Some(json!({
             "type": block_type,
             "source": { "type": "base64", "media_type": media, "data": base64(&bytes) },
-        }));
+        })));
     }
 
-    let len = std::fs::metadata(path).ok()?.len();
-    if len > MAX_INLINE_TEXT {
-        return None;
+    let Ok(meta) = std::fs::metadata(path) else { return Ok(None) };
+    if meta.len() > MAX_INLINE_TEXT {
+        return Ok(None);
     }
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(json!({ "type": "text", "text": format!("File contents:\n{text}") }))
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(None) };
+    Ok(Some(json!({ "type": "text", "text": format!("File contents:\n{text}") })))
 }
 
 /// Small standalone base64 encoder — not worth another dependency.

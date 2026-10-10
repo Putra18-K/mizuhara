@@ -195,13 +195,13 @@ fn hooks_status() -> HookStatus {
 }
 
 /// Returns the diff the user has to look at before anything is written.
-#[tauri::command]
+#[tauri::command(async)]
 fn hooks_preview(install: bool) -> Result<HookPreview, String> {
     hooks::preview(install)
 }
 
 /// Only ever called from an explicit click in the settings window.
-#[tauri::command]
+#[tauri::command(async)]
 fn hooks_apply(
     app: AppHandle,
     shared: State<Shared>,
@@ -230,12 +230,12 @@ fn commandcode_hooks_status() -> HookStatus {
     hooks::commandcode_status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn commandcode_hooks_preview(install: bool) -> Result<HookPreview, String> {
     hooks::commandcode_preview(install)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn commandcode_hooks_apply(
     app: AppHandle,
     shared: State<Shared>,
@@ -293,23 +293,23 @@ fn chat_reset(chat: State<Chat>) {
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
-#[tauri::command]
+#[tauri::command(async)]
 fn ingest_file(path: String) -> Result<DroppedFile, String> {
     files::ingest(&path)
 }
 
 /// The island may only ask whether a key exists — never read it.
-#[tauri::command]
+#[tauri::command(async)]
 fn secret_present(key: String) -> bool {
     secrets::present(&key)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn secret_set(key: String, value: String) -> Result<(), String> {
     secrets::set(&key, &value)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn secret_clear(key: String) -> Result<(), String> {
     secrets::clear(&key)
 }

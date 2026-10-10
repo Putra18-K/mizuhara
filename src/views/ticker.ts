@@ -97,32 +97,33 @@ export class Ticker {
 
   sync(task: AgentTask | null) {
     const steps = task && task.steps.length > 0 ? task.steps : ["…"];
-    const idx = task ? Math.min(task.stepIndex, steps.length - 1) : -1;
+    const last = steps.length - 1;
+    // Penghitung yang terus naik. stepIndex macet di 19 begitu jendela penuh.
+    const seq = task ? (task.stepSeq ?? task.stepIndex) : 0;
 
-    // First render: drop straight into place, no animation.
-    if (this.displayIndex < 0) {
-      this.displayIndex = idx;
-      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
-      setText(this.b, steps[Math.max(idx, 0)]);
-      this.rest();
-      return;
-    }
-
-    // The session restarted (steps were cleared): re-seed rather than scroll.
-    if (idx < this.displayIndex) {
+    const seed = () => {
       this.queue = [];
       this.startMs = null;
-      this.displayIndex = idx;
-      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
-      setText(this.b, steps[Math.max(idx, 0)]);
+      this.displayIndex = seq;
+      setText(this.a, last > 0 ? steps[last - 1] : "…");
+      setText(this.b, steps[Math.max(last, 0)]);
       this.rest();
+    };
+
+    // Render pertama, atau sesi di-reset: pasang langsung tanpa animasi.
+    if (this.displayIndex < 0 || seq < this.displayIndex) {
+      seed();
       return;
     }
 
-    for (let i = this.displayIndex + 1; i <= idx; i++) this.queue.push(steps[i]);
-    this.displayIndex = idx;
-    if (this.queue.length > MAX_QUEUE) {
-      this.queue = this.queue.slice(-MAX_QUEUE);
+    const fresh = seq - this.displayIndex;
+    if (fresh > 0) {
+      const take = Math.min(fresh, steps.length);
+      this.queue.push(...steps.slice(steps.length - take));
+      this.displayIndex = seq;
+      if (this.queue.length > MAX_QUEUE) {
+        this.queue = this.queue.slice(-MAX_QUEUE);
+      }
     }
   }
 

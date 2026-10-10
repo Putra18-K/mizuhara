@@ -21,6 +21,36 @@ const APPROVAL_AGENTS = new Set(["commandcode"]);
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
 
+/** Timer "bersihkan pill 90 detik setelah Stop", per sesi, supaya bisa dibatalkan. */
+const stopTimers = new Map<string, number>();
+
+function cancelStop(key: string) {
+  const id = stopTimers.get(key);
+  if (id != null) {
+    window.clearTimeout(id);
+    stopTimers.delete(key);
+  }
+}
+
+/**
+ * Permintaan izin dijawab di terminal: island tidak diberi tahu. Begitu agent
+ * jalan lagi, kartunya basi dan tidak boleh menahan island terkunci (isPinned).
+ */
+function dropStaleApproval(island: Island, sid: string, target?: string) {
+  const p = State.pendingApproval;
+  if (!p || p.sessionId !== sid) return;
+  if (target && p.command !== target) return; // tool paralel lain jangan ikut terhapus
+  if (pendingTimeout != null) {
+    window.clearTimeout(pendingTimeout);
+    pendingTimeout = null;
+  }
+  State.pendingApproval = null;
+  State.isPinned = false;
+  island.dropPin();
+  if (State.view === "approval") island.setView(State.defaultView());
+  State.notify();
+}
+
 interface HookPayload {
   hook_event_name?: string;
   request_id?: string;
@@ -161,6 +191,7 @@ function handleHook(island: Island, payload: HookPayload) {
   const validAgent = validateAgent(payload.mizuhara_agent);
   const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
+  const key = `${agentId}:${sid}`;
 
   /** How this agent is named in notifications and the finished card. */
   const agentLabel = isExternalAgent
@@ -196,12 +227,15 @@ function handleHook(island: Island, payload: HookPayload) {
 
   switch (name) {
     case "SessionStart":
+      cancelStop(key);
       ensurePill();
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
+      cancelStop(key);
+      dropStaleApproval(island, sid);
       ensurePill();
       State.setSessionState(agentId, sid, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
@@ -212,6 +246,7 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "PreToolUse": {
+      cancelStop(key);
       ensurePill();
       State.setSessionState(agentId, sid, "working");
       const tool = payload.tool_name ?? "Tool";
@@ -221,10 +256,12 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "PostToolUse":
+      dropStaleApproval(island, sid, approvalTarget(payload.tool_name ?? "Tool", payload.tool_input ?? {}));
       State.setSessionState(agentId, sid, "working");
       break;
 
     case "PostToolUseFailure":
+      dropStaleApproval(island, sid, approvalTarget(payload.tool_name ?? "Tool", payload.tool_input ?? {}));
       State.setSessionState(agentId, sid, "working");
       State.appendSessionStep(agentId, sid, "⚠ failed");
       break;
@@ -243,6 +280,8 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "Stop": {
+      cancelStop(key);
+      dropStaleApproval(island, sid);
       State.setSessionState(agentId, sid, "finished");
       // The final assistant message, read from the transcript by the relay.
       State.setSessionResult(agentId, sid, payload.result ?? null);
@@ -257,18 +296,23 @@ function handleHook(island: Island, payload: HookPayload) {
       const done = (payload.result ?? payload.message ?? `Finished in ${projectName}`).trim();
       void Bridge.notify(`${agentLabel} · selesai`, done.length > 180 ? `${done.slice(0, 180)}…` : done);
       // Keep the result around long enough to be read, then clear the pill.
-      window.setTimeout(() => {
-        if (isExternalAgent) {
-          State.removeSession(agentId, sid);
-        } else {
-          State.setSessionState(agentId, sid, "idle");
-          State.setSessionBadge(agentId, sid, null);
-        }
-      }, 90_000);
+      stopTimers.set(
+        key,
+        window.setTimeout(() => {
+          stopTimers.delete(key);
+          if (isExternalAgent) {
+            State.removeSession(agentId, sid);
+          } else {
+            State.setSessionState(agentId, sid, "idle");
+            State.setSessionBadge(agentId, sid, null);
+          }
+        }, 90_000),
+      );
       break;
     }
 
     case "StopFailure": {
+      dropStaleApproval(island, sid);
       State.setSessionState(agentId, sid, "error");
       State.setSessionResult(agentId, sid, payload.result ?? null);
       Sound.play("error");
@@ -281,6 +325,8 @@ function handleHook(island: Island, payload: HookPayload) {
     }
 
     case "SessionEnd":
+      cancelStop(key);
+      dropStaleApproval(island, sid);
       if (isExternalAgent) {
         State.removeSession(agentId, sid);
       } else {
